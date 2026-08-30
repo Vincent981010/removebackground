@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>去背工作台 — 自動去背 + 手動筆刷</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "onnxruntime-web": "./assets/onnxruntime-web/ort.wasm.bundle.min.js"
+  }
+}
+</script>
+<style>
+  :root{
+    --bg:#151519;
+    --panel:#1c1d23;
+    --panel-2:#22232a;
+    --border:#2d2e37;
+    --border-soft:#25262e;
+    --text:#e9e6dd;
+    --text-dim:#8d8f99;
+    --text-faint:#5c5d68;
+    --accent:#eaa23c;
+    --accent-soft:rgba(234,162,60,.14);
+    --restore:#5fd68a;
+    --restore-soft:rgba(95,214,138,.14);
+    --erase:#e2574c;
+    --erase-soft:rgba(226,87,76,.14);
+    --radius:10px;
+    --font-display:'Fraunces',serif;
+    --font-ui:'Inter',-apple-system,sans-serif;
+    --font-mono:'IBM Plex Mono',monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--font-ui);
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  /* ---------- header ---------- */
+  header{
+    flex:0 0 auto;
+    display:flex;
+    align-items:baseline;
+    gap:14px;
+    padding:16px 24px;
+    border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#1a1b20,#151519);
+  }
+  header .mark{
+    width:10px;height:10px;border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 12px 2px var(--accent-soft);
+    flex:0 0 auto;
+  }
+  header h1{
+    font-family:var(--font-display);
+    font-weight:600;
+    font-size:20px;
+    letter-spacing:.2px;
+    margin:0;
+  }
+  header p{
+    margin:0;
+    font-size:12.5px;
+    color:var(--text-dim);
+  }
+
+  /* ---------- layout ---------- */
+  .app{
+    flex:1 1 auto;
+    display:flex;
+    min-height:0;
+  }
+  aside{
+    flex:0 0 296px;
+    border-right:1px solid var(--border);
+    background:var(--panel);
+    overflow-y:auto;
+    padding:18px 18px 40px;
+  }
+  .stage{
+    flex:1 1 auto;
+    position:relative;
+    overflow:auto;
+    background-color:#3a3c45;
+    background-image:
+      linear-gradient(45deg,#33343c 25%,transparent 25%),
+      linear-gradient(-45deg,#33343c 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#33343c 75%),
+      linear-gradient(-45deg,transparent 75%,#33343c 75%);
+    background-size:22px 22px;
+    background-position:0 0,0 11px,11px -11px,-11px 0px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .stage-inner{
+    min-width:100%;
+    min-height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:32px;
+  }
+  .canvas-wrap{
+    position:relative;
+    box-shadow:0 12px 40px rgba(0,0,0,.45);
+    touch-action:none;
+  }
+  #workCanvas{
+    display:block;
+    width:100%;
+    height:100%;
+  }
+  #workCanvas.pixelated{ image-rendering:pixelated; }
+  .brush-cursor{
+    position:absolute;
+    top:0;left:0;
+    border-radius:50%;
+    border:1.5px solid var(--restore);
+    background:rgba(95,214,138,.08);
+    pointer-events:none;
+    transform:translate(-50%,-50%);
+    display:none;
+  }
+  .brush-cursor.erase{ border-color:var(--erase); background:rgba(226,87,76,.08); }
+  .brush-cursor::after{
+    content:'';
+    position:absolute;
+    top:50%;left:50%;
+    width:2px;height:2px;
+    background:var(--text);
+    transform:translate(-50%,-50%);
+    border-radius:50%;
+  }
+
+  /* ---------- drop zone ---------- */
+  .dropzone{
+    width:min(480px,80%);
+    padding:48px 28px;
+    border:1.5px dashed var(--border);
+    border-radius:16px;
+    text-align:center;
+    color:var(--text-dim);
+    background:rgba(255,255,255,.015);
+    cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .dropzone:hover, .dropzone.drag{
+    border-color:var(--accent);
+    background:var(--accent-soft);
+  }
+  .dropzone .icon{
+    font-family:var(--font-display);
+    font-size:32px;
+    color:var(--accent);
+    margin-bottom:10px;
+  }
+  .dropzone h2{
+    font-family:var(--font-ui);
+    font-size:15px;
+    font-weight:600;
+    color:var(--text);
+    margin:0 0 6px;
+  }
+  .dropzone p{ margin:0; font-size:12.5px; line-height:1.6; }
+
+  /* ---------- sidebar sections ---------- */
+  .section{
+    padding:16px 0;
+    border-bottom:1px solid var(--border-soft);
+  }
+  .section:first-child{ padding-top:2px; }
+  .section:last-child{ border-bottom:none; }
+  .section-label{
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--text-faint);
+    font-weight:600;
+    margin:0 0 12px;
+  }
+
+  button{
+    font-family:var(--font-ui);
+    cursor:pointer;
+    border:1px solid var(--border);
+    background:var(--panel-2);
+    color:var(--text);
+    border-radius:8px;
+    padding:9px 12px;
+    font-size:13px;
+    font-weight:500;
+    transition:border-color .12s, background .12s, color .12s, opacity .12s;
+  }
+  button:hover:not(:disabled){ border-color:#3d3f4a; background:#282a32; }
+  button:disabled{ opacity:.38; cursor:not-allowed; }
+  button:focus-visible, input:focus-visible, .dropzone:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px;
+  }
+
+  .btn-primary{
+    width:100%;
+    background:var(--accent);
+    border-color:var(--accent);
+    color:#1c1305;
+    font-weight:700;
+    padding:11px 12px;
+  }
+  .btn-primary:hover:not(:disabled){ background:#f5ae4a; border-color:#f5ae4a; }
+
+  .btn-ghost-file{
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+  }
+
+  .file-meta{
+    margin-top:10px;
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    color:var(--text-dim);
+    display:flex;
+    justify-content:space-between;
+  }
+
+  .status-line{
+    margin-top:10px;
+    font-size:12px;
+    color:var(--text-dim);
+    min-height:16px;
+    line-height:1.5;
+  }
+  .status-line.error{ color:var(--erase); }
+  .status-line.ok{ color:var(--restore); }
+
+  .progress-track{
+    margin-top:8px;
+    height:4px;
+    border-radius:2px;
+    background:var(--panel-2);
+    overflow:hidden;
+    display:none;
+  }
+  .progress-track.show{ display:block; }
+  .progress-fill{
+    height:100%;
+    width:0%;
+    background:var(--accent);
+    transition:width .15s ease;
+  }
+
+  .mode-toggle{
+    display:flex;
+    gap:8px;
+  }
+  .mode-toggle button{
+    flex:1;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    padding:10px 6px;
+  }
+  .mode-toggle button .dot{
+    width:8px;height:8px;border-radius:50%;
+  }
+  .mode-toggle button[data-mode="restore"] .dot{ background:var(--restore); }
+  .mode-toggle button[data-mode="erase"] .dot{ background:var(--erase); }
+  .mode-toggle button.active[data-mode="restore"]{ border-color:var(--restore); background:var(--restore-soft); }
+  .mode-toggle button.active[data-mode="erase"]{ border-color:var(--erase); background:var(--erase-soft); }
+
+  .field{ margin-top:14px; }
+  .field:first-child{ margin-top:0; }
+  .field-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    margin-bottom:6px;
+  }
+  .field-row label{ font-size:12.5px; color:var(--text-dim); }
+  .field-row .val{ font-family:var(--font-mono); font-size:12px; color:var(--text); }
+
+  input[type="range"]{
+    -webkit-appearance:none;
+    width:100%;
+    height:3px;
+    border-radius:2px;
+    background:var(--panel-2);
+    outline:none;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:14px;height:14px;
+    border-radius:50%;
+    background:var(--accent);
+    border:2px solid #151519;
+    cursor:pointer;
+    margin-top:-5.5px;
+  }
+  input[type="range"]::-moz-range-thumb{
+    width:12px;height:12px;border-radius:50%;
+    background:var(--accent); border:2px solid #151519; cursor:pointer;
+  }
+  input[type="range"]::-moz-range-track{ height:3px; border-radius:2px; background:var(--panel-2); }
+
+  select{
+    width:100%;
+    font-family:var(--font-ui);
+    font-size:12.5px;
+    color:var(--text);
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:8px 10px;
+    cursor:pointer;
+  }
+  select:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .row-2{ display:flex; gap:8px; }
+  .row-2 button{ flex:1; }
+
+  .zoom-readout{
+    font-family:var(--font-mono);
+    font-size:12px;
+    color:var(--text-dim);
+    text-align:center;
+    min-width:46px;
+  }
+  .zoom-controls{ display:flex; align-items:center; gap:6px; }
+  .zoom-controls button{ padding:8px 10px; }
+
+  .checkbox-row{
+    display:flex; align-items:center; gap:8px;
+    font-size:12.5px; color:var(--text-dim);
+    user-select:none; cursor:pointer;
+  }
+  .checkbox-row input{ accent-color:var(--accent); width:14px; height:14px; }
+
+  .hint{
+    margin-top:10px;
+    font-size:11.5px;
+    line-height:1.6;
+    color:var(--text-faint);
+  }
+  kbd{
+    font-family:var(--font-mono);
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-bottom-width:2px;
+    padding:1px 5px;
+    border-radius:4px;
+    font-size:10.5px;
+  }
+
+  #fileInput{ display:none; }
+
+  ::-webkit-scrollbar{ width:10px; height:10px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background:#33343d; border-radius:6px; }
+
+  @media (max-width:820px){
+    .app{ flex-direction:column; }
+    aside{ flex:0 0 auto; width:100%; border-right:none; border-bottom:1px solid var(--border); max-height:44vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="mark"></div>
+  <h1>去背工作台</h1>
+  <p>自動去背・原始畫質不壓縮・筆刷手動修飾</p>
+</header>
+
+<div class="app">
+  <aside>
+
+    <div class="section">
+      <p class="section-label">1・圖片</p>
+      <input type="file" id="fileInput" accept="image/*">
+      <button class="btn-ghost-file" id="pickFileBtn">
+        <span id="pickFileLabel">選擇照片…</span>
+        <span style="color:var(--text-faint)">⌁</span>
+      </button>
+      <div class="file-meta" id="fileMeta" style="display:none;">
+        <span id="fileDims">—</span>
+        <span id="fileName">—</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <p class="section-label">2・自動去背</p>
+      <div class="field" style="margin-top:0;">
+        <div class="field-row"><label>模型</label></div>
+        <select id="modelOverrideSelect">
+          <option value="auto" selected>自動偵測(動漫 / 真人)</option>
+          <option value="anime">強制:動漫 / 插畫</option>
+          <option value="photo">強制:真人 / 一般照片</option>
+        </select>
+      </div>
+      <button class="btn-primary" id="autoRemoveBtn" disabled style="margin-top:12px;">執行自動去背</button>
+      <div class="progress-track" id="progressTrack"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="status-line" id="statusLine">請先上傳一張照片</div>
+      <p class="hint">網站會先粗略判斷照片是「動漫插畫」還是「真人照片」,自動選用對應的 AI 模型(isnet-anime / isnet-general-use)。判斷是用簡單的色彩統計做的,不一定每次都準,猜錯的話可以在上面手動指定模型再重跑一次。兩種模型都內建在 assets 資料夾裡,不會向任何第三方伺服器下載,運算全程在你的裝置上進行。首次使用某個模型時瀏覽器需要載入本機檔案(約 170~180MB),完成後會依模型分別快取。</p>
+    </div>
+
+    <div class="section">
+      <p class="section-label">3・筆刷修飾</p>
+      <div class="mode-toggle">
+        <button data-mode="restore" class="active" id="modeRestoreBtn" disabled>
+          <span class="dot"></span>恢復
+        </button>
+        <button data-mode="erase" id="modeEraseBtn" disabled>
+          <span class="dot"></span>抹除
+        </button>
+      </div>
+
+      <div class="field">
+        <div class="field-row"><label>筆刷大小</label><span class="val" id="brushSizeVal">60 px</span></div>
+        <input type="range" id="brushSizeSlider" min="4" max="400" value="60" disabled>
+      </div>
+      <div class="field">
+        <div class="field-row"><label>邊緣硬度</label><span class="val" id="brushHardnessVal">70%</span></div>
+        <input type="range" id="brushHardnessSlider" min="0" max="100" value="70" disabled>
+      </div>
+
+      <div class="field row-2">
+        <button id="undoBtn" disabled>↺ 復原</button>
+        <button id="redoBtn" disabled>↻ 重做</button>
+      </div>
+
+      <p class="hint"><kbd>R</kbd> 恢復筆刷 · <kbd>E</kbd> 抹除筆刷 · <kbd>[</kbd><kbd>]</kbd> 筆刷大小 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 復原</p>
+    </div>
+
+    <div class="section">
+      <p class="section-label">4・檢視</p>
+      <div class="field">
+        <div class="zoom-controls">
+          <button id="zoomOutBtn" disabled>−</button>
+          <span class="zoom-readout" id="zoomVal">100%</span>
+          <button id="zoomInBtn" disabled>＋</button>
+          <button id="zoomFitBtn" disabled style="flex:1;">符合視窗</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="checkbox-row">
+          <input type="checkbox" id="showOriginalToggle" disabled>
+          按住可比對:顯示原始照片
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <p class="section-label">5・匯出</p>
+      <button class="btn-primary" id="downloadBtn" disabled>下載 PNG(無損)</button>
+      <p class="hint">匯出為 PNG,保留原始解析度與去背後的透明背景,不會重新壓縮畫質。</p>
+    </div>
+
+  </aside>
+
+  <div class="stage" id="stage">
+    <div class="stage-inner" id="stageInner">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上傳照片">
+        <div class="icon">⌁</div>
+        <h2>拖曳照片到這裡,或點擊上傳</h2>
+        <p>支援 JPG / PNG / WebP 等常見格式<br>照片會依原始解析度處理,全程在瀏覽器本機執行</p>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap" style="display:none;">
+        <canvas id="workCanvas"></canvas>
+        <div class="brush-cursor" id="brushCursor"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- state ----------
+  let width = 0, height = 0;
+  let originalData = null;   // Uint8ClampedArray, opaque RGBA of the untouched source photo
+  let resultData = null;     // Uint8ClampedArray, current editable RGBA (what's shown / exported)
+  let resultImageData = null;
+  let originalImageData = null;
+  let currentFile = null;
+  let hasAutoRun = false;
+
+  let history = [];
+  let redoStack = [];
+  const MAX_HISTORY = 12;
+
+  let brushMode = 'restore';
+  let brushSize = 60;
+  let brushHardness = 70;
+
+  let zoom = 1;
+  let isPainting = false;
+  let lastImgPos = null;
+  let dirty = null; // {minX,minY,maxX,maxY}
+  let strokeSnapshotTaken = false;
+
+  // ---------- dom refs ----------
+  const fileInput = document.getElementById('fileInput');
+  const pickFileBtn = document.getElementById('pickFileBtn');
+  const pickFileLabel = document.getElementById('pickFileLabel');
+  const fileMeta = document.getElementById('fileMeta');
+  const fileDims = document.getElementById('fileDims');
+  const fileName = document.getElementById('fileName');
+
+  const dropzone = document.getElementById('dropzone');
+  const stage = document.getElementById('stage');
+  const stageInner = document.getElementById('stageInner');
+  const canvasWrap = document.getElementById('canvasWrap');
+  const workCanvas = document.getElementById('workCanvas');
+  const ctx = workCanvas.getContext('2d', { willReadFrequently: true });
+  const brushCursor = document.getElementById('brushCursor');
+
+  const autoRemoveBtn = document.getElementById('autoRemoveBtn');
+  const statusLine = document.getElementById('statusLine');
+  const progressTrack = document.getElementById('progressTrack');
+  const progressFill = document.getElementById('progressFill');
+
+  const modeRestoreBtn = document.getElementById('modeRestoreBtn');
+  const modeEraseBtn = document.getElementById('modeEraseBtn');
+  const brushSizeSlider = document.getElementById('brushSizeSlider');
+  const brushSizeVal = document.getElementById('brushSizeVal');
+  const brushHardnessSlider = document.getElementById('brushHardnessSlider');
+  const brushHardnessVal = document.getElementById('brushHardnessVal');
+  const undoBtn = document.getElementById('undoBtn');
+  const redoBtn = document.getElementById('redoBtn');
+
+  const zoomInBtn = document.getElementById('zoomInBtn');
+  const zoomOutBtn = document.getElementById('zoomOutBtn');
+  const zoomFitBtn = document.getElementById('zoomFitBtn');
+  const zoomVal = document.getElementById('zoomVal');
+  const showOriginalToggle = document.getElementById('showOriginalToggle');
+
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  // ---------- helpers ----------
+  function setStatus(msg, kind){
+    statusLine.textContent = msg;
+    statusLine.className = 'status-line' + (kind ? (' ' + kind) : '');
+  }
+
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+
+  function setControlsEnabled(enabled){
+    [modeRestoreBtn, modeEraseBtn, brushSizeSlider, brushHardnessSlider,
+     zoomInBtn, zoomOutBtn, zoomFitBtn, showOriginalToggle, downloadBtn].forEach(el=>{
+      el.disabled = !enabled;
+    });
+  }
+
+  function updateUndoRedoButtons(){
+    undoBtn.disabled = history.length === 0;
+    redoBtn.disabled = redoStack.length === 0;
+  }
+
+  // ---------- load image ----------
+  function loadFile(file){
+    if(!file || !file.type.startsWith('image/')){
+      setStatus('這個檔案看起來不是圖片,請換一張試試。', 'error');
+      return;
+    }
+    currentFile = file;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      width = img.naturalWidth;
+      height = img.naturalHeight;
+
+      workCanvas.width = width;
+      workCanvas.height = height;
+
+      ctx.drawImage(img, 0, 0);
+      const src = ctx.getImageData(0, 0, width, height);
+
+      originalData = new Uint8ClampedArray(src.data);
+      resultData = new Uint8ClampedArray(src.data);
+      originalImageData = new ImageData(originalData, width, height);
+      resultImageData = new ImageData(resultData, width, height);
+
+      history = [];
+      redoStack = [];
+      hasAutoRun = false;
+      updateUndoRedoButtons();
+
+      dropzone.style.display = 'none';
+      canvasWrap.style.display = 'block';
+
+      fileMeta.style.display = 'flex';
+      fileDims.textContent = width + '×' + height + ' px';
+      fileName.textContent = file.name.length > 22 ? file.name.slice(0,19)+'…' : file.name;
+      pickFileLabel.textContent = '更換照片…';
+
+      autoRemoveBtn.disabled = false;
+      setControlsEnabled(false); // brush/zoom/download stay locked until an auto-removal has run
+      zoomInBtn.disabled = zoomOutBtn.disabled = zoomFitBtn.disabled = false;
+
+      fitToWindow();
+      render();
+      setStatus('照片已載入,按「執行自動去背」開始。');
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      setStatus('讀取照片失敗,請換一張試試。', 'error');
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }
+
+  pickFileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => {
+    if(e.target.files && e.target.files[0]) loadFile(e.target.files[0]);
+  });
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('keydown', e => { if(e.key==='Enter' || e.key===' ') fileInput.click(); });
+
+  ['dragenter','dragover'].forEach(evt=>{
+    dropzone.addEventListener(evt, e=>{ e.preventDefault(); dropzone.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(evt=>{
+    dropzone.addEventListener(evt, e=>{ e.preventDefault(); dropzone.classList.remove('drag'); });
+  });
+  dropzone.addEventListener('drop', e=>{
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) loadFile(f);
+  });
+
+  // ---------- rendering ----------
+  function render(rect){
+    const dataObj = showOriginalToggle.checked ? originalImageData : resultImageData;
+    if(rect){
+      ctx.putImageData(dataObj, 0, 0, rect.minX, rect.minY, rect.maxX-rect.minX+1, rect.maxY-rect.minY+1);
+    } else {
+      ctx.putImageData(dataObj, 0, 0);
+    }
+  }
+
+  showOriginalToggle.addEventListener('change', () => render());
+
+  // ---------- zoom ----------
+  function applyZoom(){
+    canvasWrap.style.width = (width*zoom)+'px';
+    canvasWrap.style.height = (height*zoom)+'px';
+    workCanvas.classList.toggle('pixelated', zoom >= 2.5);
+    zoomVal.textContent = Math.round(zoom*100)+'%';
+  }
+  function fitToWindow(){
+    const availW = stage.clientWidth - 64;
+    const availH = stage.clientHeight - 64;
+    zoom = clamp(Math.min(availW/width, availH/height), 0.05, 3);
+    applyZoom();
+  }
+  zoomInBtn.addEventListener('click', ()=>{ zoom = clamp(zoom*1.25, 0.05, 6); applyZoom(); });
+  zoomOutBtn.addEventListener('click', ()=>{ zoom = clamp(zoom/1.25, 0.05, 6); applyZoom(); });
+  zoomFitBtn.addEventListener('click', fitToWindow);
+
+  // ---------- auto background removal (auto-detects anime vs. real photo) ----------
+  const MODEL_SIZE = 1024;
+  const MODEL_CONFIGS = {
+    anime: { dir: 'isnet-anime-model', mean: [0.485, 0.456, 0.406], label: '動漫 / 插畫' },
+    photo: { dir: 'isnet-general-model', mean: [0.5, 0.5, 0.5], label: '真人 / 一般照片' }
+  };
+  const MODEL_STD = [1.0, 1.0, 1.0];
+
+  let ortModule = null;
+  const ortSessions = {}; // one cached session per model key
+
+  let modelOverride = 'auto'; // 'auto' | 'anime' | 'photo'
+  const modelOverrideSelect = document.getElementById('modelOverrideSelect');
+  if(modelOverrideSelect){
+    modelOverrideSelect.addEventListener('change', e => { modelOverride = e.target.value; });
+  }
+
+  // Lightweight, no-download heuristic: illustrations tend to use far fewer
+  // distinct colors and have large flat-shaded regions compared to photos,
+  // which have continuous tone and natural noise even after quantization.
+  function classifyImageStyle(){
+    const SAMPLE = 128;
+    const c = document.createElement('canvas');
+    c.width = SAMPLE; c.height = SAMPLE;
+    const cx = c.getContext('2d');
+    cx.drawImage(workCanvas, 0, 0, width, height, 0, 0, SAMPLE, SAMPLE);
+    const { data } = cx.getImageData(0, 0, SAMPLE, SAMPLE);
+
+    const seen = new Set();
+    const gray = new Float32Array(SAMPLE * SAMPLE);
+    const BITS = 5, shift = 8 - BITS;
+    for(let p = 0, i = 0; i < data.length; i += 4, p++){
+      const r = data[i] >> shift, g = data[i+1] >> shift, b = data[i+2] >> shift;
+      seen.add((r << 10) | (g << 5) | b);
+      gray[p] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+    }
+    const uniqueRatio = seen.size / (SAMPLE * SAMPLE);
+
+    let flatCount = 0, blockCount = 0;
+    for(let y = 0; y < SAMPLE - 1; y += 2){
+      for(let x = 0; x < SAMPLE - 1; x += 2){
+        const i00 = y*SAMPLE + x, i01 = i00+1, i10 = i00+SAMPLE, i11 = i10+1;
+        const m = (gray[i00]+gray[i01]+gray[i10]+gray[i11]) / 4;
+        const v = ((gray[i00]-m)**2 + (gray[i01]-m)**2 + (gray[i10]-m)**2 + (gray[i11]-m)**2) / 4;
+        if(v < 6) flatCount++;
+        blockCount++;
+      }
+    }
+    const flatRatio = flatCount / blockCount;
+    const animeScore = (1 - Math.min(uniqueRatio / 0.35, 1)) * 0.6 + flatRatio * 0.4;
+    return { mode: animeScore > 0.5 ? 'anime' : 'photo', animeScore };
+  }
+
+  async function ensureOrtReady(){
+    if(!ortModule){
+      ortModule = await import('onnxruntime-web');
+      ortModule.env.wasm.wasmPaths = {
+        wasm: new URL('assets/onnxruntime-web/ort-wasm-simd-threaded.wasm', location.href).href,
+        mjs: new URL('assets/onnxruntime-web/ort-wasm-simd-threaded.js', location.href).href
+      };
+      // GitHub Pages doesn't send the cross-origin-isolation headers SharedArrayBuffer
+      // needs, so force the single-threaded wasm path (still uses SIMD).
+      ortModule.env.wasm.numThreads = 1;
+      ortModule.env.wasm.proxy = false;
+    }
+    return ortModule;
+  }
+
+  async function ensureSessionReady(ort, modelKey){
+    if(ortSessions[modelKey]) return ortSessions[modelKey];
+
+    const dir = MODEL_CONFIGS[modelKey].dir;
+    setStatus('正在載入模型分片(本機資源)…');
+    const manifestUrl = new URL(`assets/${dir}/manifest.json`, location.href).href;
+    const manifest = await (await fetch(manifestUrl)).json();
+
+    const chunks = [];
+    for(let i = 0; i < manifest.chunkCount; i++){
+      const name = 'chunk_' + String(i).padStart(3, '0') + '.bin';
+      const url = new URL(`assets/${dir}/` + name, location.href).href;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('模型分片載入失敗: ' + name);
+      chunks.push(new Uint8Array(await res.arrayBuffer()));
+      const pct = Math.round(((i+1) / manifest.chunkCount) * 100);
+      progressFill.style.width = pct + '%';
+      setStatus('正在載入模型分片(本機資源)… ' + pct + '%');
+    }
+
+    const modelBytes = new Uint8Array(manifest.totalBytes);
+    let offset = 0;
+    for(const c of chunks){ modelBytes.set(c, offset); offset += c.length; }
+
+    setStatus('正在初始化推論引擎…');
+    ortSessions[modelKey] = await ort.InferenceSession.create(modelBytes, { executionProviders: ['wasm'] });
+    return ortSessions[modelKey];
+  }
+
+  // Resize to 1024x1024 and build the normalized CHW float32 tensor,
+  // matching rembg's DisSession preprocessing exactly (including its
+  // per-image max normalization instead of a fixed /255).
+  function buildInputTensor(ort, mean){
+    const tmp = document.createElement('canvas');
+    tmp.width = MODEL_SIZE; tmp.height = MODEL_SIZE;
+    const tctx = tmp.getContext('2d');
+    tctx.imageSmoothingEnabled = true;
+    tctx.imageSmoothingQuality = 'high';
+    tctx.drawImage(workCanvas, 0, 0, width, height, 0, 0, MODEL_SIZE, MODEL_SIZE);
+    const { data } = tctx.getImageData(0, 0, MODEL_SIZE, MODEL_SIZE);
+
+    let maxVal = 1e-6;
+    for(let i = 0; i < data.length; i += 4){
+      if(data[i]   > maxVal) maxVal = data[i];
+      if(data[i+1] > maxVal) maxVal = data[i+1];
+      if(data[i+2] > maxVal) maxVal = data[i+2];
+    }
+
+    const plane = MODEL_SIZE * MODEL_SIZE;
+    const float = new Float32Array(3 * plane);
+    for(let p = 0; p < plane; p++){
+      const idx = p * 4;
+      float[p]           = ((data[idx]   / maxVal) - mean[0]) / MODEL_STD[0];
+      float[plane + p]   = ((data[idx+1] / maxVal) - mean[1]) / MODEL_STD[1];
+      float[2*plane + p] = ((data[idx+2] / maxVal) - mean[2]) / MODEL_STD[2];
+    }
+    return new ort.Tensor('float32', float, [1, 3, MODEL_SIZE, MODEL_SIZE]);
+  }
+
+  // Min-max normalize the raw output to 0-255, then upscale from 1024x1024
+  // back to the photo's native resolution to use as the alpha channel.
+  function maskOutputToAlpha(outputTensor){
+    const out = outputTensor.data;
+    let mi = Infinity, ma = -Infinity;
+    for(let i = 0; i < out.length; i++){
+      if(out[i] < mi) mi = out[i];
+      if(out[i] > ma) ma = out[i];
+    }
+    const range = (ma - mi) || 1e-6;
+
+    const small = document.createElement('canvas');
+    small.width = MODEL_SIZE; small.height = MODEL_SIZE;
+    const sctx = small.getContext('2d');
+    const maskImg = sctx.createImageData(MODEL_SIZE, MODEL_SIZE);
+    for(let i = 0; i < out.length; i++){
+      const v = Math.round(((out[i] - mi) / range) * 255);
+      const idx = i * 4;
+      maskImg.data[idx] = maskImg.data[idx+1] = maskImg.data[idx+2] = v;
+      maskImg.data[idx+3] = 255;
+    }
+    sctx.putImageData(maskImg, 0, 0);
+
+    const full = document.createElement('canvas');
+    full.width = width; full.height = height;
+    const fctx = full.getContext('2d');
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = 'high';
+    fctx.drawImage(small, 0, 0, MODEL_SIZE, MODEL_SIZE, 0, 0, width, height);
+    return fctx.getImageData(0, 0, width, height).data; // use the R channel as alpha
+  }
+
+  autoRemoveBtn.addEventListener('click', async () => {
+    if(!currentFile) return;
+    autoRemoveBtn.disabled = true;
+    pickFileBtn.disabled = true;
+    progressTrack.classList.add('show');
+    progressFill.style.width = '2%';
+
+    try{
+      const modelKey = modelOverride === 'auto' ? classifyImageStyle().mode : modelOverride;
+      const cfg = MODEL_CONFIGS[modelKey];
+      setStatus('偵測為「' + cfg.label + '」風格,正在準備對應的 AI 模型…');
+
+      const ort = await ensureOrtReady();
+      const session = await ensureSessionReady(ort, modelKey);
+
+      setStatus('正在分析照片主體…');
+      const inputTensor = buildInputTensor(ort, cfg.mean);
+      const outputs = await session.run({ [session.inputNames[0]]: inputTensor });
+      const outputTensor = outputs[session.outputNames[0]];
+      const alphaFromMask = maskOutputToAlpha(outputTensor);
+
+      pushHistorySnapshot();
+      for(let p = 0, i = 0; i < resultData.length; i += 4, p += 4){
+        resultData[i]   = originalData[i];
+        resultData[i+1] = originalData[i+1];
+        resultData[i+2] = originalData[i+2];
+        resultData[i+3] = alphaFromMask[p]; // R channel of the (grayscale) mask
+      }
+      hasAutoRun = true;
+
+      setControlsEnabled(true);
+      brushMode = 'restore';
+      setActiveModeButton();
+      render();
+      setStatus('自動去背完成(' + cfg.label + '模型)。用左側筆刷微調細節吧。', 'ok');
+    } catch(err){
+      console.error(err);
+      const detail = (err && err.message) ? String(err.message).slice(0, 160) : '未知錯誤';
+      setStatus('自動去背失敗:' + detail, 'error');
+    } finally{
+      autoRemoveBtn.disabled = false;
+      pickFileBtn.disabled = false;
+      setTimeout(()=>{ progressTrack.classList.remove('show'); progressFill.style.width='0%'; }, 600);
+    }
+  });
+
+  // ---------- history ----------
+  function pushHistorySnapshot(){
+    history.push(resultData.slice());
+    if(history.length > MAX_HISTORY) history.shift();
+    redoStack = [];
+    updateUndoRedoButtons();
+  }
+  function undo(){
+    if(history.length === 0) return;
+    redoStack.push(resultData.slice());
+    const prev = history.pop();
+    resultData.set(prev);
+    updateUndoRedoButtons();
+    render();
+  }
+  function redo(){
+    if(redoStack.length === 0) return;
+    history.push(resultData.slice());
+    const next = redoStack.pop();
+    resultData.set(next);
+    updateUndoRedoButtons();
+    render();
+  }
+  undoBtn.addEventListener('click', undo);
+  redoBtn.addEventListener('click', redo);
+
+  // ---------- brush mode / size ----------
+  function setActiveModeButton(){
+    modeRestoreBtn.classList.toggle('active', brushMode === 'restore');
+    modeEraseBtn.classList.toggle('active', brushMode === 'erase');
+    brushCursor.classList.toggle('erase', brushMode === 'erase');
+  }
+  modeRestoreBtn.addEventListener('click', ()=>{ brushMode='restore'; setActiveModeButton(); });
+  modeEraseBtn.addEventListener('click', ()=>{ brushMode='erase'; setActiveModeButton(); });
+
+  brushSizeSlider.addEventListener('input', e=>{
+    brushSize = parseInt(e.target.value, 10);
+    brushSizeVal.textContent = brushSize + ' px';
+    updateCursorSize();
+  });
+  brushHardnessSlider.addEventListener('input', e=>{
+    brushHardness = parseInt(e.target.value, 10);
+    brushHardnessVal.textContent = brushHardness + '%';
+  });
+
+  function updateCursorSize(){
+    const d = brushSize * zoom;
+    brushCursor.style.width = d + 'px';
+    brushCursor.style.height = d + 'px';
+  }
+
+  // ---------- painting ----------
+  function imgPosFromEvent(e){
+    const rect = workCanvas.getBoundingClientRect();
+    const scaleX = width / rect.width;
+    const scaleY = height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+  }
+
+  function growDirty(x0,y0,x1,y1){
+    if(!dirty){ dirty = {minX:x0,minY:y0,maxX:x1,maxY:y1}; return; }
+    dirty.minX = Math.min(dirty.minX, x0);
+    dirty.minY = Math.min(dirty.minY, y0);
+    dirty.maxX = Math.max(dirty.maxX, x1);
+    dirty.maxY = Math.max(dirty.maxY, y1);
+  }
+
+  function paintDab(cx, cy){
+    const radius = brushSize / 2;
+    const inner = radius * (brushHardness / 100);
+    const minX = Math.max(0, Math.floor(cx - radius));
+    const maxX = Math.min(width - 1, Math.ceil(cx + radius));
+    const minY = Math.max(0, Math.floor(cy - radius));
+    const maxY = Math.min(height - 1, Math.ceil(cy + radius));
+    if(minX > maxX || minY > maxY) return;
+
+    for(let y = minY; y <= maxY; y++){
+      const dy = y - cy;
+      for(let x = minX; x <= maxX; x++){
+        const dx = x - cx;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if(dist > radius) continue;
+        let strength;
+        if(dist <= inner || inner >= radius - 0.001){
+          strength = 1;
+        } else {
+          const t = (dist - inner) / (radius - inner);
+          strength = 1 - t; // linear falloff in the feather ring
+        }
+        const idx = (y * width + x) * 4;
+        if(brushMode === 'restore'){
+          resultData[idx]   = lerp(resultData[idx],   originalData[idx],   strength);
+          resultData[idx+1] = lerp(resultData[idx+1], originalData[idx+1], strength);
+          resultData[idx+2] = lerp(resultData[idx+2], originalData[idx+2], strength);
+          resultData[idx+3] = lerp(resultData[idx+3], 255, strength);
+        } else {
+          resultData[idx+3] = lerp(resultData[idx+3], 0, strength);
+        }
+      }
+    }
+    growDirty(minX, minY, maxX, maxY);
+  }
+
+  function paintSegment(p0, p1){
+    const dx = p1.x - p0.x, dy = p1.y - p0.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const step = Math.max(1, brushSize / 5);
+    const steps = Math.max(1, Math.ceil(dist / step));
+    for(let i = 0; i <= steps; i++){
+      const t = i / steps;
+      paintDab(p0.x + dx*t, p0.y + dy*t);
+    }
+  }
+
+  function canPaint(){
+    return hasAutoRun && !showOriginalToggle.checked;
+  }
+
+  workCanvas.addEventListener('pointerdown', e=>{
+    if(!canPaint()) return;
+    workCanvas.setPointerCapture(e.pointerId);
+    isPainting = true;
+    strokeSnapshotTaken = false;
+    dirty = null;
+    const pos = imgPosFromEvent(e);
+    if(!strokeSnapshotTaken){ pushHistorySnapshot(); strokeSnapshotTaken = true; }
+    paintDab(pos.x, pos.y);
+    lastImgPos = pos;
+    if(dirty) render(dirty);
+  });
+
+  workCanvas.addEventListener('pointermove', e=>{
+    // cursor preview
+    const wrapRect = canvasWrap.getBoundingClientRect();
+    brushCursor.style.display = hasAutoRun ? 'block' : 'none';
+    brushCursor.style.left = (e.clientX - wrapRect.left) + 'px';
+    brushCursor.style.top = (e.clientY - wrapRect.top) + 'px';
+
+    if(!isPainting || !canPaint()) return;
+    const pos = imgPosFromEvent(e);
+    paintSegment(lastImgPos, pos);
+    lastImgPos = pos;
+    if(dirty){ render(dirty); dirty = null; }
+  });
+
+  workCanvas.addEventListener('pointerenter', ()=>{ if(hasAutoRun) brushCursor.style.display='block'; updateCursorSize(); });
+  workCanvas.addEventListener('pointerleave', ()=>{ brushCursor.style.display='none'; });
+
+  function endStroke(e){
+    if(!isPainting) return;
+    isPainting = false;
+    try{ workCanvas.releasePointerCapture(e.pointerId); }catch(err){}
+    dirty = null;
+  }
+  workCanvas.addEventListener('pointerup', endStroke);
+  workCanvas.addEventListener('pointercancel', endStroke);
+
+  // ---------- keyboard shortcuts ----------
+  window.addEventListener('keydown', e=>{
+    if(e.target.tagName === 'INPUT') return;
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
+      e.preventDefault();
+      if(e.shiftKey) redo(); else undo();
+      return;
+    }
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y'){ e.preventDefault(); redo(); return; }
+    if(!hasAutoRun) return;
+    if(e.key === 'r' || e.key === 'R'){ brushMode='restore'; setActiveModeButton(); }
+    if(e.key === 'e' || e.key === 'E'){ brushMode='erase'; setActiveModeButton(); }
+    if(e.key === '['){ brushSizeSlider.value = Math.max(4, brushSize-6); brushSizeSlider.dispatchEvent(new Event('input')); }
+    if(e.key === ']'){ brushSizeSlider.value = Math.min(400, brushSize+6); brushSizeSlider.dispatchEvent(new Event('input')); }
+  });
+
+  // ---------- download ----------
+  downloadBtn.addEventListener('click', () => {
+    render();
+    workCanvas.toBlob(blob => {
+      const a = document.createElement('a');
+      const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, '') : 'photo';
+      a.href = URL.createObjectURL(blob);
+      a.download = base + '-去背.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, 'image/png');
+  });
+
+  // ---------- resize ----------
+  window.addEventListener('resize', ()=>{ if(width) updateCursorSize(); });
+
+})();
+</script>
+</body>
+</html>
